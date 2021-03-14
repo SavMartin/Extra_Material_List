@@ -1,282 +1,475 @@
-# Export Blender curves to maya v1.0
-# Author: Mario Baldi
-# web:    www.mariobaldi.com
-# email:  info@mariobaldi.com
-# Tested on Blender 2.62
+#-------------------------------------------------------------------------------
+#                     Extra Material List - Addon for Blender
+#
+# - Two display options (preview and plain list)
+# - Display object and world materials
+# - Eliminate duplicates for node groups and materials
+#
+# Version: 0.2
+# Revised: 11.08.2017
+# Author: Miki (meshlogic)
+#-------------------------------------------------------------------------------
+bl_info = {
+    "name": "Extra Material List",
+    "author": "Miki (meshlogic), Port to 2.9x Sav Martin",
+    "category": "Node",
+    "description": "An alternative object/world material list for Node Editor.",
+    "location": "Node Editor > Tools > Material List",
+    "version": (0, 2),
+    "blender": (2, 90, 0)
+}
 
 import bpy
-import mathutils
-import re
-import math
+from bpy.props import *
+from bpy.types import Menu, Operator, Panel, UIList
+from bpy.app.handlers import persistent
 
 
-bl_info = {
-    "name": "Autodesk Maya curves",
-    "author": "Mario Baldi,(Sav Martin 2.9x port)",
-    "blender": (2,90,0),
-    "location": "File > Import-Export",
-    "description": "Import-Export ma, curves" ,
-    "warning": "",
-    "wiki_url": "",
-    "tracker_url": "",
-    "support": 'OFFICIAL',
-    "category": "Import-Export"}
+#-------------------------------------------------------------------------------
+# UI PANEL - Extra Material List
+#------------------------------------------------------------------------------- 
+class EXTRAMATERIALLIST_PT_panel(Panel):
+    bl_space_type = 'NODE_EDITOR'
+    bl_idname = "EXTRAMATERIALLIST_PT_panel"
+    bl_space_type = "NODE_EDITOR"
+    bl_region_type = "UI"   
+    bl_category = "Material List"
+    bl_label = "Extra Material List"
 
-def build_maya_matrix():
-    maya_mtrx = mathutils.Matrix()
-    maya_mtrx[0].xyz = 1.0, 0.0, 0.0
-    maya_mtrx[1].xyz = 0.0, 0.0, 1.0
-    maya_mtrx[2].xyz = 0.0, -1.0, 0.0
-    maya_mtrx[3].xyz = 0.0, 0.0, 0.0
-    return maya_mtrx
+    #--- Available only for "shading nodes" render
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        valid_trees = ["ShaderNodeTree"]
+        if space.type == 'NODE_EDITOR' and space.node_tree is not None and space.tree_type in valid_trees:
+            return True
 
-def build_knots_array(nverts, degree):
-    knotLen = nverts + degree - 1
-    # These knot values are generated for non-periodic curve. See the maya documentation
-    # It will need a fix for closed curves
-    # Furthermore, I will build the curve setting the maya minmaxvalue range [0..nspans]
-    lastKnotValue = nverts - degree
-    kn = []
+    #--- Draw Panel
+    def draw(self, context):
+        layout = self.layout
+        cs = context.scene
+        sdata = context.space_data
+        props = cs.extra_material_list
+        
+        #--- Shader tree and type selection
+        row = layout.row()
+        row.alignment = 'CENTER'
+        row.prop(sdata, "tree_type", text="", expand=True)
+        row.prop(sdata, "shader_type", text="", expand=True)
+        
+        #--- Proceed only for OBJECT/WORLD shader node trees
+        if sdata.tree_type != 'ShaderNodeTree' or (sdata.shader_type != 'OBJECT' and sdata.shader_type != 'WORLD'):
+            return
+        
+        #--- List style buttons
+        row = layout.row()
+        row.prop(props, "style", expand=True)
 
-    for i in range (knotLen):
-        v = i-degree+1
-        if v<0:
-            v=0
-        elif v>lastKnotValue or i>=knotLen-degree  :
-            v = lastKnotValue
-
-        # Add value to the knot list
-        kn.append(v)
-    return kn
-
-def write_curve_shape(spline, mtrx=None):
-    # Note that BEZIER curves are actually exported as NURBS curves
-    # and this script could be extended to properly support them
-    if spline.type=="POLY":
-        points = spline.points
-        degree = 1
-
-    elif spline.type=="BEZIER":
-        points = spline.bezier_points
-        degree = 3
-
-    elif spline.type=="NURBS":
-        points = spline.points
-        degree = spline.order_u
-
-    nverts = spline.point_count_u  
-
-    nspans = nverts-degree
-    #if degree>1:
-    #    nspans -= degree
-
-    knots = build_knots_array(nverts,degree)                   
-    nknots = len(knots)
-    knots_str = ' '.join(map(str, knots))
-
-    openclosed = 0
-    if spline.use_cyclic_u:
-        openclosed = 2
-
-    print(knots)
-    print(nverts)
-    print(nspans)
-    print(openclosed)
-
-    curve_attrs = []
-    curve_attrs.append('    setAttr -k off ".v"; \n' )
-    curve_attrs.append('    setAttr ".cc" -type "nurbsCurve" \n' )
-    curve_attrs.append('        %s %s %s no 3 \n' %(degree,nspans,openclosed) ) # I suppose [degree, spans, ? 0:open 2:closed , no(constant), 3(constant)]
-    curve_attrs.append('        %s %s   \n' % (nknots, knots_str) ) # Knots array
-    curve_attrs.append('        %s \n' % nverts ) #n vertices 
-
-    maya_mtrx = build_maya_matrix()
-
-    if mtrx is not None:
-        # When a matrix is supplied, this will be baked to the vertices
-        for pt in points:
-            t_vec = mathutils.Vector((mtrx[0][3], mtrx[2][3],-mtrx[1][3], 0.0)) 
-            wpt = (maya_mtrx @ mtrx) @ pt.co + t_vec
-            curve_attrs.append('        %s %s %s \n' %(wpt[0], wpt[1], wpt[2]) )
-    else:
-        #Using the local verts coordinates
-        for pt in points:
-            pt = maya_mtrx @ pt.co
-            curve_attrs.append('        %s %s %s \n' %(pt[0], pt[1], pt[2]) )
-
-    curve_attrs.append('        ; \n')
-
-    return curve_attrs
-
-
-
-
-def export_curves_to_maya(operator,
-         context, filepath="",
-         use_selection=True,
-         global_matrix=None,
-         bake_world_position=True,
-         ):
-
-    # This function will export blender curves to .ma maya file format
-
-    # By default, I will export all curves in the scene
-    if use_selection:
-        selection = bpy.context.selected_objects
-    else:
-        selection = list(bpy.data.objects)
-
-    #cube = bpy.data.objects["Cube"]
-    #print (selection)
-    #print(dir(cube))
-    #print (type(cube))
-
-    if len(selection)>0:
-        # Currently the script doesn't check the UNIT system used
-        maya_file_header = []
-        maya_file_header.append('//Maya ASCII 2009 scene \n')
-        maya_file_header.append('requires maya "2009"; \n')
-        maya_file_header.append('currentUnit -l centimeter -a degree -t film; \n')
-        maya_file_header.append('fileInfo "application" "maya";\n')
-        maya_file_header.append('fileInfo "product" "Maya Unlimited 2009"; \n')
-        maya_file_header.append('fileInfo "version" "2009"; \n')
-
-        maya_file = []
-        maya_file.extend(maya_file_header)
-
-        for sel in selection:
-            #print (type(sel))
-            #print (sel.type)
-            if sel.type=="MESH":
-                # Here I could convert polylines to maya curves (degree=1)
-                pass
-                '''
-                # Some garbage while testing blender scripting... This is my first script after all!!!
-                print (sel.name)
-                #seldata = bpy.data.meshes[sel.name]   # data by name
-                seldata = sel.data
-                print (seldata)
-                verts = list(seldata.vertices)
-                faces = list(seldata.faces)
-                print (len(verts))
-                print ('\n')
-                print (len(faces))
-                '''
-            if sel.type=="CURVE":
-                print (sel.name)
-                seldata = sel.data
-                print (seldata)
-
-                bake_mw=None
-                if bake_world_position:
-                    bake_mw = sel.matrix_world
-                #print (list(seldata.splines))
-    
-                ill_chars = [',', '!', '.', ';', '?']
-                curves_grp = sel.name
-                curves_grp = re.sub('[%s]' % ''.join(ill_chars), '_', curves_grp) # Removing illegal chars
-                maya_file.append('createNode transform -n "%s"; \n' % curves_grp)
-
-
-                for id, spl in enumerate(seldata.splines):
-                    # Create curve nodes (transform + shape)
-                    curve_t_name = '%s_curve%s' % (sel.name,id+1)
-                    curve_shape_name = '%s_curveShape%s' % (sel.name,id+1)
-                    # I filter the names to be sure that there aren't illegal characters
-                    curve_t_name = re.sub('[%s]' % ''.join(ill_chars), '_', curve_t_name)
-                    curve_shape_name = re.sub('[%s]' % ''.join(ill_chars), '_', curve_shape_name)
-                    maya_file.append('createNode transform -n "%s" -p "%s"; \n' % (curve_t_name, curves_grp) )
-                    maya_file.append('createNode nurbsCurve -n "%s" -p "%s"; \n' % (curve_shape_name, curve_t_name) )
-
-                    # Set Shape Attributes
-                    maya_file.extend( write_curve_shape(spl,bake_mw) )
-
-                '''    
-                # This part should transform items containing curves (groups) in maya, according the
-                # blender selected item world matrix. Sadly I wasn't able to let it work properly. 
-                if bake_world_position==False:
-                    # I will try to export the correct position of the objects containing the curves 
-                    # This is currently WRONG, and shouldn't be used
-                    # I am setting the items/groups transformation after parenting the guides
-                    maya_mtrx = maya_mtrx = build_maya_matrix()
-                    mtrx = maya_mtrx * sel.matrix_world 
-                    # Translation
-                    t = mtrx.translation
-                    # Rotation
-                    euler_rad = sel.rotation_euler
-                    rx = math.degrees(euler_rad.x)
-                    ry = math.degrees(euler_rad.y)
-                    rz = math.degrees(euler_rad.z)
-                    # Scale
-                    s = sel.scale
-
-                    #maya_file.append('    setAttr "%s.t" -type "double3" %s %s %s ; \n' %(curves_grp, t.x, t.y, t.z))
-                    #maya_file.append('    setAttr "%s.r" -type "double3" %s %s %s ; \n' %(curves_grp, rx, rz, ry))
-                    #maya_file.append('    setAttr "%s.s" -type "double3" %s %s %s ; \n' %(curves_grp, s.x, s.y, s.z))
-                    maya_file.append('setAttr "%s.xformMatrix" -type "matrix" \n' %(curves_grp))
-                    maya_file.append('    %s %s %s %s \n' %(mtrx[0].x, mtrx[1].x, mtrx[2].x, 0))
-                    maya_file.append('    %s %s %s %s \n' %(mtrx[0].y, mtrx[1].y, mtrx[2].y, 0))
-                    maya_file.append('    %s %s %s %s \n' %(mtrx[0].z, mtrx[1].z, mtrx[2].z, 0))
-                    maya_file.append('    %s %s %s %s ; \n' %(t.x, t.y, t.z, 1))
-                    
-                    print (mtrx[0].x, mtrx[0].y, mtrx[0].z, 0)
-                    print (mtrx[1].x, mtrx[1].y, mtrx[1].z, 0)
-                    print (mtrx[2].x, mtrx[2].y, mtrx[2].z, 0)
-
-                '''    
-                #print (''.join(map(str, maya_file)))
-
-    # Write mode creates a new file or overwrites the existing content of the file. 
-    # Write mode will _always_ destroy the existing contents of a file.
-    try:
-        # This will create a new file or **overwrite an existing file**.
-        print (filepath)
-        f = open(filepath, "w")
-        try:
-            f.writelines(maya_file) # Write a sequence of strings to a file
-        finally:
-            f.close()
-    except IOError:
-        return {'ERROR'}  
-
-    return {'FINISHED'}   
-
-# ADDON
-                
-from bpy.props import StringProperty, FloatProperty, BoolProperty, EnumProperty  # interface  
-from bpy_extras.io_utils import (ExportHelper,
-                                 axis_conversion,
-                                 )
-
-
-class ExportCurvesToMaya(bpy.types.Operator, ExportHelper):
-    '''Export curves to Maya file format (.ma)'''
-    bl_idname = "export_scene.autodesk_maya_curves"
-    bl_label = 'Export curves to maya'
-
-    filename_ext = ".ma"
-
-    use_selection : BoolProperty(
-            name="Selection Only",
-            description="Export selected objects only",
-            default=False,
-            )
+        #-----------------------------------------------------------------------        
+        # PREVIEW Style
+        #-----------------------------------------------------------------------
+        if props.style == 'PREVIEW':
+        
+            #--- Num. of rows & cols for the preview list
+            row = layout.row()
+            split = row.split(factor=0.6)
+            col = split.column(align=True)
+            col.prop(props, "rows")
+            col.prop(props, "cols")
             
-    #bl_options = {'REGISTER'}  # enable undo for the operator.
+            #--- Object materials
+            if sdata.shader_type == 'OBJECT':
+                
+                # List of all scene materials
+                mat_list = bpy.data.materials
+                
+                # Current active material
+                if hasattr(sdata.id_from, "active_material"):
+                    mat = sdata.id_from.active_material
+                else:
+                    return
+                
+                # Navigation button PREV
+                sub = split.column()
+                sub.scale_y = 2
+                sub.operator("extra_material_list.nav", text="", icon='BACK').dir = 'PREV'
+                sub.enabled = enable_prev_button(mat, mat_list)
 
-    def execute(self, context):        # execute() is called by blender when running the operator.
-        # The original script
-        keywords = self.as_keywords(ignore=("check_existing",))
-        return export_curves_to_maya(self, context, **keywords)
+                # Navigation button NEXT
+                sub = split.column()
+                sub.scale_y = 2
+                sub.operator("extra_material_list.nav", text="", icon='FORWARD').dir = 'NEXT'
+                sub.enabled = enable_next_button(mat, mat_list)
+                            
+                # Preview list
+                layout.template_ID_preview(
+                    sdata.id_from, "active_material",
+                    new = "material.new",
+                    rows = props.rows, cols = props.cols
+                )
+
+            #--- World materials
+            elif sdata.shader_type == 'WORLD':
+
+                # List of all scene worlds
+                world_list = bpy.data.worlds
+
+                # Current active world
+                world = context.scene.world
+                
+                # Navigation button PREV
+                sub = split.column()
+                sub.scale_y = 2
+                sub.operator("extra_material_list.nav", text="", icon='BACK').dir = 'PREV'
+                sub.enabled = enable_prev_button(world, world_list)
+                
+                # Navigation button NEXT
+                sub = split.column()
+                sub.scale_y = 2
+                sub.operator("extra_material_list.nav", text="", icon='FORWARD').dir = 'NEXT'
+                sub.enabled = enable_next_button(world, world_list)
+                
+                # Preview list
+                layout.template_ID_preview(
+                    cs, "world",
+                    new = "world.new",
+                    rows = props.rows, cols = props.cols
+                )
+                
+            layout.separator()
+                
+        #-----------------------------------------------------------------------        
+        # LIST Style
+        #-----------------------------------------------------------------------
+        elif props.style == 'LIST':
+            
+            #--- Object materials
+            if sdata.shader_type == 'OBJECT':
+                layout.template_list(
+                    "EXTRA_MATERIAL_LIST_UL_list", "",
+                    bpy.data, "materials",
+                    props, "material_id",
+                    rows = len(bpy.data.materials)
+                )
+                
+            #--- World materials
+            elif sdata.shader_type == 'WORLD':
+                layout.template_list(
+                    "EXTRA_MATERIAL_LIST_UL_list", "",
+                    bpy.data, "worlds",
+                    props, "world_id",
+                    rows = len(bpy.data.worlds)
+                )
+            
+            #--- Show icons prop
+            row = layout.row()
+            row.prop(props, "show_icons")
+        
+        #----------------------------------------------------------------------- 
+        # ELIMINATE Duplicates
+        #-----------------------------------------------------------------------
+        row = layout.row()
+        row.label(text="Eliminate Duplicates:", icon='CANCEL')
+        row = layout.row(align=True)
+        row.operator("extra_material_list.eliminate_nodegroups", text="Node Groups")
+        row.operator("extra_material_list.eliminate_materials", text="Materials")
+        
+        
+#-------------------------------------------------------------------------------
+# Functions to decide if enable/disable navigation buttons
+#------------------------------------------------------------------------------- 
+def enable_prev_button(item, item_list):
+    if item != None and len(item_list) > 0:
+        return item != item_list[0]
+    else:
+        return False
+    
+def enable_next_button(item, item_list):
+    if item != None and len(item_list) > 0:
+        return item != item_list[-1]
+    else:
+        return False
 
 
-def menu_func_export(self, context):
-    self.layout.operator(ExportCurvesToMaya.bl_idname, text="Maya curves (.ma)")
+#-------------------------------------------------------------------------------
+# CUSTOM TEMPLATE_LIST FOR MATERIALS
+#------------------------------------------------------------------------------- 
+class EXTRA_MATERIAL_LIST_UL_list(UIList):
+    
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        props = bpy.context.scene.extra_material_list
+        
+        # Material name and icon
+        row = layout.row(align=True)
+        if props.show_icons:
+            row.prop(item, "name", text="", emboss=False, icon_value=icon)
+        else:
+            row.prop(item, "name", text="", emboss=False, icon_value=0)
+        
+        # Material status (fake user, zero users)
+        row = row.row(align=True)
+        row.alignment = 'RIGHT'
+        
+        if item.use_fake_user:
+            row.label(text="F")
+        else:
+            if item.users == 0:
+                row.label(text="0")
+
+
+#--- Update the active material when you select another item in the template_list
+def update_active_material(self, context):
+    try:
+        id = bpy.context.scene.extra_material_list.material_id
+        if id < len(bpy.data.materials):
+            mat = bpy.data.materials[id]
+            bpy.context.object.active_material = mat
+    except:
+        pass
+
+#--- Update the active world shader when you select another item in the template_list
+def update_active_world(self, context):
+    try:
+        id = bpy.context.scene.extra_material_list.world_id
+        if id < len(bpy.data.worlds):
+            world = bpy.data.worlds[id]
+            bpy.context.scene.world = world
+    except:
+        pass  
+
+#-------------------------------------------------------------------------------
+# ELIMINATE MATERIAL DUPLICATES
+#-------------------------------------------------------------------------------     
+class ExtraMaterialList_OT_EliminateMaterials(Operator):
+    bl_idname = "extra_material_list.eliminate_materials"
+    bl_label = "Eliminate Material Duplicates"
+    bl_description = "Eliminate material duplicates (ending with .001, .002, etc) and replace them with the original material if found."
+    
+    def execute(self, context):
+        print("\nEliminate Material Duplicates:")
+        mats = bpy.data.materials
+                
+        #--- Search for mat. slots in all objects
+        for obj in bpy.data.objects:
+            for slot in obj.material_slots:
+                
+                # Get the material name as 3-tuple (base, separator, extension)
+                (base, sep, ext) = slot.name.rpartition('.')
+                
+                # Replace the numbered duplicate with the original if found
+                if ext.isnumeric():
+                    if base in mats:
+                        print("  For object '%s' replace '%s' with '%s'" % (obj.name, slot.name, base))
+                        slot.material = mats.get(base)
+
+        return{'FINISHED'}
+
+#-------------------------------------------------------------------------------
+# ELIMINATE NODE GROUP DUPLICATES
+#-------------------------------------------------------------------------------
+class ExtraMaterialList_OT_EliminateNodeGroups(Operator):
+    bl_idname = "extra_material_list.eliminate_nodegroups"
+    bl_label = "Eliminate Node Group Duplicates"
+    bl_description = "Eliminate node group duplicates (ending with .001, .002, etc) and replace them with the original node group if found."
+    
+    #--- Eliminate node group duplicate with the original group found
+    def eliminate(self, node):
+        node_groups = bpy.data.node_groups
+        
+        # Get the node group name as 3-tuple (base, separator, extension)
+        (base, sep, ext) = node.node_tree.name.rpartition('.')
+        
+        # Replace the numbered duplicate with original if found
+        if ext.isnumeric():
+            if base in node_groups:
+                print("  Replace '%s' with '%s'" % (node.node_tree.name, base))
+                node.node_tree.use_fake_user = False
+                node.node_tree = node_groups.get(base)
+        
+    #--- Execute
+    def execute(self, context):
+        print("\nEliminate Node Group Duplicates:")
+        
+        mats = list(bpy.data.materials)
+        worlds = list(bpy.data.worlds)
+        node_groups = bpy.data.node_groups
+        
+        #--- Search for duplicates in the actual node groups
+        for group in node_groups:
+            for node in group.nodes:
+                if node.type == 'GROUP':
+                    self.eliminate(node)
+                    
+        #--- Search for duplicates in materials
+        for mat in mats + worlds:
+            if mat.use_nodes:
+                for node in mat.node_tree.nodes:
+                    if node.type == 'GROUP':
+                        self.eliminate(node)
+                            
+        return{'FINISHED'}
+
+#-------------------------------------------------------------------------------
+# NAVIGATION OPERATOR
+#------------------------------------------------------------------------------- 
+class ExtraMaterialList_OT_Nav(Operator):
+    bl_idname = "extra_material_list.nav"
+    bl_label = "Nav"
+    bl_description = "Navigation button"
+
+    dir : EnumProperty(
+        items = [
+            ('NEXT', "PREV", "PREV"),
+            ('PREV', "PREV", "PREV")
+        ],
+        name = "dir",
+        default = 'NEXT')
+
+    def execute(self, context):
+        sdata = context.space_data
+        
+        #--- Navigate in object materials
+        if sdata.shader_type == 'OBJECT':
+            
+            # List of all scene materials
+            mat_list = list(bpy.data.materials)
+            
+            # Get index of the current active material
+            mat = sdata.id_from.active_material
+            if mat in mat_list:
+                id = mat_list.index(mat)
+            else:
+                return{'FINISHED'}      
+            
+            # Navigate
+            if self.dir == 'NEXT':
+                if id+1 < len(mat_list):
+                    sdata.id_from.active_material = mat_list[id+1]
+
+            if self.dir == 'PREV':
+                if id > 0:
+                    sdata.id_from.active_material = mat_list[id-1]
+
+        #--- Navigate in worlds
+        elif sdata.shader_type == 'WORLD':
+            
+            # List of all scene worlds
+            world_list = list(bpy.data.worlds)
+            
+            # Get index of the current active world
+            world = context.scene.world
+            if world in world_list:
+                id = world_list.index(world)
+            else:
+                return{'FINISHED'}      
+            
+            # Navigate
+            if self.dir == 'NEXT':
+                if id+1 < len(world_list):
+                    context.scene.world = world_list[id+1]
+
+            if self.dir == 'PREV':
+                if id > 0:
+                    context.scene.world = world_list[id-1]
+
+        return{'FINISHED'}
+
+
+#-------------------------------------------------------------------------------
+# CUSTOM HANDLER (scene_update_post)
+# - This handler is invoked after the scene updates
+# - Keeps template_list synced with the active material
+#-------------------------------------------------------------------------------
+@persistent
+def update_material_list(context):
+    try:
+        props = bpy.context.scene.extra_material_list
+        
+        #--- Update world list
+        try:
+            world = bpy.context.scene.world
+            if world != None:
+                id = bpy.data.worlds.find(world.name)
+                if id != -1 and id != props.world_id:
+                    props.world_id = id
+        except:
+            pass    
+        
+        #--- Update material list
+        try:
+            mat = bpy.context.object.active_material
+            if mat != None:
+                id = bpy.data.materials.find(mat.name)
+                if id != -1 and id != props.material_id:
+                    props.material_id = id
+        except:
+            pass
+    except:
+        pass
+
+
+#-------------------------------------------------------------------------------
+# CUSTOM SCENE PROPS
+#-------------------------------------------------------------------------------        
+class ExtraMaterialList_Props(bpy.types.PropertyGroup):
+        
+    style : EnumProperty(
+        items = [
+            ('PREVIEW', "Preview", "", 0),
+            ('LIST', "List", "", 1),
+        ],
+        default = 'PREVIEW',
+        name = "Style",
+        description = "Material list style")
+    
+    rows : IntProperty(
+        name = "Rows",
+        description = "Num. of rows in the preview list",
+        default = 5, min = 1, max = 15)
+        
+    cols : IntProperty(
+        name = "Cols",
+        description = "Num. of columns in the preview list",
+        default = 10, min = 1, max = 30)
+    
+    # Index of the active material in the template_list
+    material_id : IntProperty(
+        default = 0,
+        update = update_active_material)
+    
+    # Index of the active world in the template_list
+    world_id : IntProperty(
+        default = 0,
+        update = update_active_world)
+
+    show_icons : BoolProperty(
+        name = "Show material icons",
+        default = False)
+        
+
+#-------------------------------------------------------------------------------
+# REGISTER/UNREGISTER ADDON CLASSES
+#-------------------------------------------------------------------------------
+classes = (
+    EXTRAMATERIALLIST_PT_panel,
+    ExtraMaterialList_OT_Nav,
+    ExtraMaterialList_OT_EliminateNodeGroups,
+    ExtraMaterialList_OT_EliminateMaterials,
+    EXTRA_MATERIAL_LIST_UL_list,
+    ExtraMaterialList_Props
+)
 
 def register():
-    bpy.utils.register_class(ExportCurvesToMaya) 
-    bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    for c in classes:
+        bpy.utils.register_class(c)
+    bpy.types.Scene.extra_material_list = PointerProperty(type=ExtraMaterialList_Props)
+    bpy.app.handlers.depsgraph_update_pre.append(update_material_list)
 
 def unregister():
-    bpy.utils.unregister_class(ExportCurvesToMaya)
-    bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
+    for c in classes:
+        bpy.utils.unregister_class(c)    
+    del bpy.types.Scene.extra_material_list
+    bpy.app.handlers.depsgraph_update_post.remove(update_material_list)
+
+if __name__ == "__main__":
+    register()
