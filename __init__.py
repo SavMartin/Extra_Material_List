@@ -40,8 +40,8 @@ class EXTRAMATERIALLIST_PT_panel(Panel):
     @classmethod
     def poll(cls, context):
         space = context.space_data
-        valid_trees = ["ShaderNodeTree"]
-        if space.type == 'NODE_EDITOR' and space.node_tree is not None and space.tree_type in valid_trees:
+        valid_trees = ["ShaderNodeTree",]
+        if space.type == 'NODE_EDITOR' and space.tree_type in valid_trees:
             return True
 
     #--- Draw Panel
@@ -54,7 +54,7 @@ class EXTRAMATERIALLIST_PT_panel(Panel):
         #--- Shader tree and type selection
         row = layout.row()
         row.alignment = 'CENTER'
-        row.prop(sdata, "tree_type", text="", expand=True)
+        # row.prop(sdata, "tree_type", text="", expand=True)
         row.prop(sdata, "shader_type", text="", expand=True)
         
         #--- Proceed only for OBJECT/WORLD shader node trees
